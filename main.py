@@ -34,11 +34,15 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
+#Test only configs/infer_configs/PURE_UBFC-rPPG_TSCAN_BASIC.yaml
+#           configs/infer_configs/UBFC-rPPG_PURE_TSCAN_BASIC.yaml
+# configs/train_configs/PURE_PURE_UBFC-rPPG_TSCAN_BASIC.yaml
+#  configs/train_configs/UBFC-rPPG_UBFC-rPPG_PURE_TSCAN_BASIC.yaml
 
 def add_args(parser):
     """Adds arguments for parser."""
     parser.add_argument('--config_file', required=False,
-                        default="configs/train_configs/PURE_PURE_UBFC-rPPG_TSCAN_BASIC.yaml", type=str, help="The name of the model.")
+                        default="configs/infer_configs/UBFC-rPPG_PURE_TSCAN_BASIC.yaml", type=str, help="The name of the model.")
     '''Neural Method Sample YAML LIST:
       SCAMPS_SCAMPS_UBFC-rPPG_TSCAN_BASIC.yaml
       SCAMPS_SCAMPS_UBFC-rPPG_DEEPPHYS_BASIC.yaml

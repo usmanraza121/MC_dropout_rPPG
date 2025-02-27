@@ -12,7 +12,9 @@ from neural_methods.loss.NegPearsonLoss import Neg_Pearson
 from neural_methods.model.TS_CAN import TSCAN
 from neural_methods.trainer.BaseTrainer import BaseTrainer
 from tqdm import tqdm
-
+import matplotlib.pyplot as plt
+import datetime
+import pandas as pd
 
 class TscanTrainer(BaseTrainer):
 
@@ -173,17 +175,33 @@ class TscanTrainer(BaseTrainer):
         self.model = self.model.to(self.config.DEVICE)
         self.model.eval()
         with torch.no_grad():
+            mean_var = []
             for _, test_batch in enumerate(data_loader['test']):
                 batch_size = test_batch[0].shape[0]
-                data_test, labels_test = test_batch[0].to(
-                    self.config.DEVICE), test_batch[1].to(self.config.DEVICE)
+                data_test, labels_test = test_batch[0].to(self.config.DEVICE), test_batch[1].to(self.config.DEVICE)
                 N, D, C, H, W = data_test.shape
                 data_test = data_test.view(N * D, C, H, W)
                 labels_test = labels_test.view(-1, 1)
                 data_test = data_test[:(N * D) // self.base_len * self.base_len]
                 labels_test = labels_test[:(N * D) // self.base_len * self.base_len]
-                pred_ppg_test = self.model(data_test)
+                # pred_ppg_test = self.model(data_test) # exclude when using MC-drop
+                
+                # print('for loop:', _, 'pred_ppg_test=', pred_ppg_test[1])
+            #================MC_dropout==========================================#
+                self.model.module.enable_dropout()
+                samples, sample_mean, sample_var = self.model.module.mc_sample(data_test)
+                # print(f'sample:{samples.shape},sample_mean:{sample_mean.shape}, sample_var:{sample_var.shape}')
+                # print('sample_mean=', sample_mean[1])
 
+                mean_var.append(sample_var.detach())
+                # print('variance=', mean_var)
+                # print('all variance:', mean_var.shape)
+                pred_ppg_test = sample_mean.view(-1,1)
+                
+                # self.plots(samples, sample_mean, sample_var, labels_test) # to plot and save results
+                # ------------------------------------------------
+                # pre3 = self.mc_dropout(data_test, label= labels_test)  # old method
+            #================MC_dropout==========================================#
                 if self.config.TEST.OUTPUT_SAVE_DIR:
                     labels_test = labels_test.cpu()
                     pred_ppg_test = pred_ppg_test.cpu()
@@ -199,6 +217,9 @@ class TscanTrainer(BaseTrainer):
 
         print('')
         calculate_metrics(predictions, labels, self.config)
+        mean_var = torch.cat(mean_var, dim=0)
+        mean_vars = mean_var.mean() 
+        print(f"Mean_Variance: {mean_vars.item()}")
         if self.config.TEST.OUTPUT_SAVE_DIR: # saving test outputs
             self.save_test_outputs(predictions, labels, self.config)
 
@@ -209,3 +230,133 @@ class TscanTrainer(BaseTrainer):
             self.model_dir, self.model_file_name + '_Epoch' + str(index) + '.pth')
         torch.save(self.model.state_dict(), model_path)
         print('Saved Model Path: ', model_path)
+
+    #================MC_dropout==========================================#
+    def mc_dropout(self, data_test, label, num_samples = 30, save=False):
+        preds = []
+        self.model.train()
+        with torch.no_grad():
+            for s in range(num_samples):
+                output = self.model(data_test)
+                preds.append(output.detach().cpu().numpy().flatten())
+           
+        pred = torch.tensor(preds)
+        pred = pred.reshape(720, -1)
+        label = label.cpu()
+        # print('pred:', pred.shape)
+        
+        if save:
+            df1 = pd.DataFrame(pred)
+            df2= pd.DataFrame(label)
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+            df1.to_excel(f'results/predictions_{timestamp}.xlsx', index=False)
+            # df1.to_excel(f'results/predictions1.xlsx', index=True)
+            df2.to_excel(f'results/labels_{timestamp}.xlsx', index=False)
+            print("Results saved to predictions_results.xlsx") 
+
+        return pred
+    
+    def plots(self, samples, sample_mean, sample_var, labels ):
+        samples = samples.cpu().numpy()
+        sample_mean = sample_mean.cpu().numpy()
+        sample_var = sample_var.cpu().numpy()
+        label = labels.cpu().numpy()
+        idd = 'no-dropout'   # keep name
+
+        plt.figure(figsize=(12, 12))
+        print('shape', sample_mean.shape)
+        epistemic_uncertainty = np.var(sample_mean, axis=0)#.mean(0)
+        print("epistemic_uncertainty",epistemic_uncertainty)
+        #------------------------Plots--------------------------------------
+        print('plots output----------samples_shape', samples.shape)
+        plt.subplot(3, 1, 1)
+        for i in range(samples.shape[1]):
+            plt.plot(range(300), samples[:300,i], label=f"Data Point {i+1}", alpha=0.7)
+            # if i ==1:
+                # plt.plot(range(samples.shape[0]), label, color='b')
+        plt.title('Data Points')
+        plt.xlabel('Data Points Index')
+        plt.ylabel('Prediction')
+        # plt.legend()
+
+        # 2. Plot the sample means (the "best guess" prediction)
+        plt.subplot(3, 1, 2)
+        plt.plot(range(300), sample_mean[0:300], linestyle='-', color='b', label="Sample Mean")
+        # plt.plot(range(samples.shape[0]), sample_mean, marker='o', linestyle='-', color='b', label="Sample Mean")
+        plt.title('Mean MC Samples')
+        plt.xlabel('Data Point Index')
+        plt.ylabel('Mean Prediction')
+        # plt.legend()
+
+        # 3. Plot the sample variances (uncertainty)
+        plt.subplot(3, 1, 3)
+        plt.plot(range(300), sample_var[0:300], linestyle='-', color='r', label="Sample Variance")
+        # plt.plot(range(samples.shape[0]), sample_var, marker='x', linestyle='-', color='r', label="Sample Variance")
+        plt.title('Variance MC Samples')
+        plt.xlabel('Data Point Index')
+        plt.ylabel('Prediction Variance')
+        # plt.legend()
+
+        plt.tight_layout()
+        
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        os.makedirs('./results', exist_ok=True)
+        filename = f"monte_carlo_plots_{idd}_{timestamp}.png"
+        filepath = os.path.join('results', filename)
+        plt.savefig(filepath, dpi=300)  # Save with high resolution
+
+# plot for predictions and labels-----------------------------------
+        plt.figure(figsize=(12, 8))
+        plt.subplot(2, 1, 1)
+        for i in range(samples.shape[1]):
+            plt.plot(range(300), samples[:300,i], label=f"Data Point {i+1}", alpha=0.7)
+            # if i ==1:
+                # plt.plot(range(samples.shape[0]), label, color='b')
+        plt.title('Data Points')
+        plt.xlabel('Data Point Index')
+        plt.ylabel('Prediction')
+        # plt.legend()
+
+        # 2. Plot the sample means (the "best guess" prediction)
+        plt.subplot(2, 1, 2)
+        plt.plot(range(300), label[:300], color='b')
+        # plt.plot(range(samples.shape[0]), sample_mean, marker='o', linestyle='-', color='b', label="Sample Mean")
+        plt.title('Predictions and Labels')
+        plt.xlabel('Data Point Index')
+        plt.ylabel('Ground Truth')
+        plt.tight_layout()
+
+        filename = f"Monte_Carlo_predictions_vs_labels_{idd}_{timestamp}.png"
+        filepath = os.path.join('results', filename)
+        plt.savefig(filepath, dpi=300)  # Save with high resolution
+
+        print(f"Plot saved successfully at: {filepath}")
+        plt.close()
+
+      
+        prediction_columns = [f"Prediction {i+1}" for i in range(samples.shape[1])]
+        label_column = ["Label"]
+
+        df1 = pd.DataFrame(samples, columns=prediction_columns)  # Shape (720, 30)
+        df2 = pd.DataFrame(label, columns=label_column)        ## Shape (720, 1)
+        df3 = pd.concat([df1, df2], axis=1)
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        df3.to_excel(f'results/predictions{idd}_{timestamp}.xlsx', index=False)
+        #------------------------------------------------
+    
+    # def save_results(self):
+    #     """
+    #     Combine results into single dataframe and save to disk as .csv file
+    #     """
+    #     results = pd.concat([
+    #         pd.DataFrame(self.IDs.cpu().numpy(), columns= ['ID']),  
+    #         pd.DataFrame(self.predicted_labels.cpu().numpy(), columns= ['predicted_label']),
+    #         pd.DataFrame(self.correct_predictions.cpu().numpy(), columns= ['correct_prediction']),
+    #         pd.DataFrame(self.epistemic_uncertainty.cpu().numpy(), columns= ['epistemic_uncertainty']), 
+    #     ], axis=1)
+
+    #     create_results_directory()
+    #     results.to_csv('results/{}_{}_results.csv'.format(self.__class__.__name__, datetime.datetime.now().replace(microsecond=0).isoformat()), index=False)

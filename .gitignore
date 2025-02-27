@@ -11,6 +11,12 @@ PreprocessedData
 PreTrainedModels
 runs
 temp
+results
+results_old
+results_dropout-0.1
+results_dropout-2.0
+results_dropoutd2_d3
+results_no-dropout
 facial_region_test.py
 interp_test.py
 debug_utils.py
